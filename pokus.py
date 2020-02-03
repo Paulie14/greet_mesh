@@ -19,21 +19,103 @@ from bgem.gmsh.gmsh import gmsh
 # import fracture
 
 
+def create_box(nodes):
+    ob_x = nodes[1][0] - nodes[0][0]
+    ob_y = nodes[1][1] - nodes[0][1]
+    ob_z = nodes[1][2] - nodes[0][2]
+    box = gmsh.model.occ.addBox(nodes[0][0], nodes[0][1], nodes[0][2], ob_x, ob_y, ob_z)
+    return 3, box
+
+
+def create_volume(nodes):
+    """
+    Creates box with lower and upper base and sides.
+    :param nodes: Nodes must be ordered: [lower_base_nodes, upper_base_nodes]
+    :return:
+    """
+    n = int(len(nodes)/2)
+    p_tags = []
+    for p in nodes:
+        p_tags.append(gmsh.model.occ.addPoint(p[0], p[1], p[2]))
+
+    l_tags = []
+    for i in range(0, n-1):
+        l_tags.append(gmsh.model.occ.addLine(p_tags[i], p_tags[i+1]))
+    l_tags.append(gmsh.model.occ.addLine(p_tags[n-1], p_tags[0]))
+    for i in range(n, 2*n-1):
+        l_tags.append(gmsh.model.occ.addLine(p_tags[i], p_tags[i+1]))
+    l_tags.append(gmsh.model.occ.addLine(p_tags[2*n-1], p_tags[n]))
+    for i in range(0, n):
+        l_tags.append(gmsh.model.occ.addLine(p_tags[i], p_tags[n+i]))
+
+    b = [l_tags[i] for i in range(0, n)]
+    loop_down = gmsh.model.occ.addCurveLoop(b)
+    base_down = gmsh.model.occ.addPlaneSurface([loop_down])
+
+    b = [l_tags[i] for i in range(n, 2*n)]
+    loop_up = gmsh.model.occ.addCurveLoop(b)
+    base_up = gmsh.model.occ.addPlaneSurface([loop_up])
+    sides = []
+    for i in range(0, n-1):
+        lines = [l_tags[i], l_tags[2*n+i+1], -l_tags[n+i], -l_tags[2*n+i]]
+        loop_side = gmsh.model.occ.addCurveLoop(lines)
+        sides.append(gmsh.model.occ.addPlaneSurface([loop_side]))
+    lines = [l_tags[n-1], l_tags[2*n], -l_tags[2*n-1], -l_tags[3*n-1]]
+    loop_side = gmsh.model.occ.addCurveLoop(lines)
+    sides.append(gmsh.model.occ.addPlaneSurface([loop_side]))
+
+    plane_loop = gmsh.model.occ.addSurfaceLoop([base_down, base_up, *sides])
+    volume = gmsh.model.occ.addVolume([plane_loop])
+    return 3, volume
+
+
+def create_plane(nodes):
+    p_tags = []
+    for p in nodes:
+        p_tags.append(gmsh.model.occ.addPoint(p[0], p[1], p[2]))
+
+    l_tags = []
+    for i in range(0, len(p_tags) - 1):
+        l_tags.append(gmsh.model.occ.addLine(p_tags[i], p_tags[i + 1]))
+    l_tags.append(gmsh.model.occ.addLine(p_tags[len(p_tags) - 1], p_tags[0]))
+
+    loop = gmsh.model.occ.addCurveLoop(l_tags)
+    polygon = gmsh.model.occ.addPlaneSurface([loop])
+    return 2, polygon
+
+
 def generate_mesh(config_dict):
     gmsh.initialize()
     file_name = "box_wells"
     gmsh.model.add(file_name)
 
+    with open(os.path.join(script_dir, "geometry.yaml"), "r") as f:
+        geometry_dict = yaml.safe_load(f)
 
-    box = gmsh.model.occ.addBox(-1000, -1000, -1000, 2000, 2000, 2000)
-    rec1 = gmsh.model.occ.addRectangle(-800, -800, 0, 1600, 1600)
-    rec2 = gmsh.model.occ.addRectangle(-1200, -1200, 0, 2400, 2400)
-    rec1_dt = (2, rec1)
-    rec2_dt = (2, rec2)
-    gmsh.model.occ.rotate([rec2_dt], 0, 0, 0, 0, 1, 0, np.pi / 2)
-    rectangle, map = gmsh.model.occ.fragment([rec1_dt, rec2_dt], [])
+    # box_outer = create_box(geometry_dict['outer_box']['nodes'])
+    box_outer = create_volume(geometry_dict['outer_box']['nodes'])
+    # box_inner = create_box(geometry_dict['inner_box']['nodes'])
 
-    box = [(3, box)]
+    fract1 = create_plane(geometry_dict['fractures'][0]['nodes'])
+
+    # rectangle, map = gmsh.model.occ.fragment([fract1_dt], [])
+    rectangle = [fract1]
+    # box = gmsh.model.occ.addBox(-1000, -1000, -1000, 2000, 2000, 2000)
+    # rec1 = gmsh.model.occ.addRectangle(-800, -800, 0, 1600, 1600)
+    # rec2 = gmsh.model.occ.addRectangle(-1200, -1200, 0, 2400, 2400)
+    # rec1_dt = (2, rec1)
+    # rec2_dt = (2, rec2)
+    # gmsh.model.occ.rotate([rec2_dt], 0, 0, 0, 0, 1, 0, np.pi / 2)
+    # rectangle, map = gmsh.model.occ.fragment([rec1_dt, rec2_dt], [])
+
+    # box_diff = gmsh.model.occ.cut(box_outer, box_inner, removeObject=True, removeTool=False)
+    # bc_inner = gmsh.model.getBoundary(box_inner, combined=False, oriented=False)
+
+    # bc_frag, map = gmsh.model.occ.fragment(box_copy, dim_tags_copy)
+
+    # box = [box_diff, box_inner]
+    box = [box_outer]
+    # box = [box_inner]
 
     box_copy = gmsh.model.occ.copy(box)
     dim_tags, map = gmsh.model.occ.intersect(rectangle, box_copy)
@@ -53,7 +135,7 @@ def generate_mesh(config_dict):
 
     bc_tags = gmsh.model.getBoundary(dim_tags, combined=False, oriented=False)
     bc_nodes = gmsh.model.getBoundary(dim_tags, combined=False, oriented=False, recursive=True)
-    bc_box_nodes = gmsh.model.getBoundary(box_cut, combined=False, oriented=False, recursive=True)
+    # bc_box_nodes = gmsh.model.getBoundary(box_cut, combined=False, oriented=False, recursive=True)
     bc_rect = gmsh.model.addPhysicalGroup(1, [tag for dim, tag in bc_tags])
     gmsh.model.setPhysicalName(1, bc_rect, ".rectangle")
     gmsh.model.occ.setMeshSize(bc_nodes, 50)
@@ -77,7 +159,7 @@ def generate_mesh(config_dict):
     bad_entities = model.mesh.getLastEntityError()
     print(bad_entities)
     gmsh.write(file_name + ".msh")
-    # gmsh.fltk.run()
+    gmsh.fltk.run()
     gmsh.finalize()
 
     return len(bad_entities)
